@@ -1,5 +1,9 @@
 /** Runtime registry and host integration, separated from the Pi entry point. */
 
+import { mkdirSync } from "node:fs";
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
 import { loadAll } from "./loader.ts";
 import {
 	prepareDataDirs,
@@ -13,14 +17,19 @@ import {
 	projectPluginsDir,
 	userPluginsDir,
 } from "./paths-client.ts";
-import { discoverPiHooks } from "./pi-hooks.ts";
+import {
+	activatePiHooks,
+	discoverPiHooks,
+	type LoadedPiHook,
+} from "./pi-hooks.ts";
 import { grantTrust, readState, setDisabled } from "./state.ts";
-import type {
-	Diagnostic,
-	LoadedPlugin,
-	PluginScope,
-	TrustCapability,
-	TrustedPluginRecord,
+import {
+	error,
+	type Diagnostic,
+	type LoadedPlugin,
+	type PluginScope,
+	type TrustCapability,
+	type TrustedPluginRecord,
 } from "./types.ts";
 
 export interface Registry {
@@ -52,6 +61,10 @@ export class PluginRuntime {
 	registry: Registry = { plugins: [], diagnostics: [], records: new Map() };
 	activeCwd = process.cwd();
 	activeProjectTrusted = false;
+	/** Diagnostics accumulated by activateHooks(), surfaced via allDiagnostics(). */
+	hookDiagnostics: Diagnostic[] = [];
+	/** Hooks already activated this runtime instance, keyed `${pluginTrustKey}::${path}`. */
+	private activatedHooks = new Set<string>();
 
 	initializeUser(): void {
 		this.scan(process.cwd(), false);
@@ -187,7 +200,61 @@ export class PluginRuntime {
 		return [
 			...this.registry.diagnostics,
 			...this.registry.plugins.flatMap((plugin) => plugin.diagnostics),
+			...this.hookDiagnostics,
 		];
+	}
+
+	/**
+	 * Activate trusted in-process Pi hooks for one scope.
+	 *
+	 * Idempotent per runtime instance: a hook already activated (by trust key +
+	 * path) is skipped so re-invocation (e.g. a rescanned session_start) never
+	 * double-registers it.
+	 */
+	async activateHooks(
+		pi: ExtensionAPI,
+		scope: PluginScope,
+	): Promise<Diagnostic[]> {
+		const diagnostics: Diagnostic[] = [];
+		const eligible = this.registry.plugins.filter(
+			(plugin) =>
+				plugin.enabled &&
+				plugin.scope === scope &&
+				this.effectiveCapabilities(plugin).has("pi-entrypoints"),
+		);
+
+		const toActivate: LoadedPiHook[] = [];
+		for (const plugin of eligible) {
+			const discovered = discoverPiHooks(plugin);
+			diagnostics.push(...discovered.diagnostics);
+			if (discovered.hooks.length === 0) continue;
+
+			const pending = discovered.hooks.filter(
+				(hook) => !this.activatedHooks.has(`${pluginTrustKey(plugin)}::${hook.path}`),
+			);
+			if (pending.length === 0) continue;
+
+			try {
+				mkdirSync(plugin.dataDir, { recursive: true, mode: 0o700 });
+			} catch (cause) {
+				diagnostics.push(
+					error("9.1", `cannot prepare plugin data dir: ${String(cause)}`, {
+						path: plugin.dataDir,
+						component: plugin.manifest.name,
+					}),
+				);
+				continue;
+			}
+
+			for (const hook of pending) {
+				this.activatedHooks.add(`${pluginTrustKey(plugin)}::${hook.path}`);
+				toActivate.push(hook);
+			}
+		}
+
+		diagnostics.push(...(await activatePiHooks(pi, toActivate)));
+		this.hookDiagnostics.push(...diagnostics);
+		return diagnostics;
 	}
 
 	discoverResources(cwd: string): ResourcePaths {

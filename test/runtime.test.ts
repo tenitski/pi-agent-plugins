@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { install } from "../src/install.ts";
 import { statePath } from "../src/paths-client.ts";
 import { PluginRuntime, pluginTrustKey } from "../src/runtime.ts";
 import { grantTrust, readState } from "../src/state.ts";
@@ -32,6 +33,46 @@ function createPluginWithMcp(root: string, name: string): void {
 			mcpServers: { demo: { type: "stdio", command: "true" } },
 		}),
 	);
+}
+
+/**
+ * A plugin declaring a dev.pi.agent hook whose default export registers a
+ * "tool_call" handler that records to `globalThis.__hookCalls` when invoked.
+ */
+function createHookedPlugin(root: string, name: string): void {
+	mkdirSync(root, { recursive: true });
+	writeFileSync(
+		join(root, "plugin.json"),
+		JSON.stringify({
+			$schema: PLUGIN_SCHEMA_ID,
+			name,
+			extensions: { "dev.pi.agent": { hooks: ["./dev.pi.agent/hooks.ts"] } },
+		}),
+	);
+	mkdirSync(join(root, "dev.pi.agent"), { recursive: true });
+	writeFileSync(
+		join(root, "dev.pi.agent", "hooks.ts"),
+		[
+			"export default (pi, ctx) => {",
+			'\tpi.on("tool_call", () => {',
+			"\t\tglobalThis.__hookCalls?.push({ name: ctx.pluginName });",
+			"\t});",
+			"};",
+			"",
+		].join("\n"),
+	);
+}
+
+/** Fake ExtensionAPI recording every `.on(event, handler)` call. */
+function fakePi(): { on: (...a: unknown[]) => void; calls: unknown[][] } {
+	const calls: unknown[][] = [];
+	return { on: (...a: unknown[]) => calls.push(a), calls };
+}
+
+function toolCallHandler(calls: unknown[][]): (...args: unknown[]) => unknown {
+	const call = calls.find((c) => c[0] === "tool_call");
+	assert.ok(call, "expected a tool_call handler to be registered");
+	return call[1] as (...args: unknown[]) => unknown;
 }
 
 test("legacy string trust migrates to mcp capability only", () => {
@@ -269,6 +310,130 @@ test("project plugin gets pi-entrypoints from project trust with no code identit
 		assert.equal(plugin.codeIdentity, undefined);
 
 		assert.ok(runtime.effectiveCapabilities(plugin).has("pi-entrypoints"));
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("trusted user hook activates during factory-style activation", async () => {
+	const agentDir = tempDir();
+	const src = tempDir();
+	createHookedPlugin(src, "hooked-a");
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+		await install({ kind: "path", path: src }, {});
+
+		const runtime = new PluginRuntime();
+		runtime.initializeUser();
+		runtime.trust("hooked-a");
+		runtime.scan();
+
+		const pi = fakePi();
+		await runtime.activateHooks(pi as never, "user");
+		assert.equal(pi.calls.filter((c) => c[0] === "tool_call").length, 1);
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("activateHooks is idempotent: a second call does not re-register", async () => {
+	const agentDir = tempDir();
+	const src = tempDir();
+	createHookedPlugin(src, "hooked-b");
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+		await install({ kind: "path", path: src }, {});
+
+		const runtime = new PluginRuntime();
+		runtime.initializeUser();
+		runtime.trust("hooked-b");
+		runtime.scan();
+
+		const pi = fakePi();
+		await runtime.activateHooks(pi as never, "user");
+		await runtime.activateHooks(pi as never, "user");
+		assert.equal(pi.calls.filter((c) => c[0] === "tool_call").length, 1);
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("untrusted and disabled user hooks are not activated", async () => {
+	const agentDir = tempDir();
+	const untrustedSrc = tempDir();
+	const disabledSrc = tempDir();
+	createHookedPlugin(untrustedSrc, "untrusted-hook");
+	createHookedPlugin(disabledSrc, "disabled-hook");
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+		await install({ kind: "path", path: untrustedSrc }, {});
+		await install({ kind: "path", path: disabledSrc }, {});
+
+		const runtime = new PluginRuntime();
+		runtime.initializeUser();
+		// Trusted for pi-entrypoints, but disabled — must not activate either.
+		runtime.trust("disabled-hook");
+		runtime.setEnabled("disabled-hook", false);
+
+		const pi = fakePi();
+		await runtime.activateHooks(pi as never, "user");
+		assert.equal(pi.calls.filter((c) => c[0] === "tool_call").length, 0);
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("trusted project hook activates only after project trust, and its handler fires", async () => {
+	const agentDir = tempDir();
+	const projectDir = tempDir();
+	const pluginRoot = join(projectDir, ".pi", "plugins", "proj-hooked");
+	createHookedPlugin(pluginRoot, "proj-hooked");
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+		const runtime = new PluginRuntime();
+
+		// Untrusted project: the plugin is not even scanned, so nothing activates.
+		runtime.startSession(projectDir, false);
+		const untrustedPi = fakePi();
+		await runtime.activateHooks(untrustedPi as never, "project");
+		assert.equal(untrustedPi.calls.length, 0);
+
+		// Trust the project and grant pi-entrypoints explicitly.
+		runtime.startSession(projectDir, true);
+		const plugin = runtime.find("proj-hooked");
+		assert.ok(plugin);
+		grantTrust(
+			[{ key: pluginTrustKey(plugin), capabilities: ["pi-entrypoints"] }],
+			statePath(),
+		);
+		runtime.scan(projectDir, true);
+
+		const trustedPi = fakePi();
+		await runtime.activateHooks(trustedPi as never, "project");
+		const handler = toolCallHandler(trustedPi.calls);
+
+		const before = (globalThis as { __hookCalls?: unknown[] }).__hookCalls
+			?.length ?? 0;
+		handler({});
+		const after = (globalThis as { __hookCalls?: unknown[] }).__hookCalls
+			?.length ?? 0;
+		assert.equal(after, before + 1);
 	} finally {
 		if (previous === undefined) delete process.env.PI_AGENT_DIR;
 		else process.env.PI_AGENT_DIR = previous;

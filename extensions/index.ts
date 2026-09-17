@@ -9,13 +9,14 @@ import { Text } from "@earendil-works/pi-tui";
 import { registerPluginCommand } from "../src/plugin-command.ts";
 import { PluginRuntime } from "../src/runtime.ts";
 
-export default function agentPlugins(pi: ExtensionAPI): void {
+export default async function agentPlugins(pi: ExtensionAPI): Promise<void> {
 	const runtime = new PluginRuntime();
 
 	// Factory-time user sync lands before pi-mcp-adapter's session initialization.
 	// A malformed plugin must never prevent Pi itself from starting.
 	try {
 		runtime.initializeUser();
+		await runtime.activateHooks(pi, "user");
 	} catch {
 		// session_start rescans and reports diagnostics with UI context.
 	}
@@ -24,6 +25,7 @@ export default function agentPlugins(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		runtime.startSession(ctx.cwd, ctx.isProjectTrusted());
+		await runtime.activateHooks(pi, "project");
 		const errors = runtime
 			.allDiagnostics()
 			.filter((diagnostic) => diagnostic.severity === "error");
