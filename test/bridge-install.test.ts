@@ -412,6 +412,33 @@ test("git install selects only the named subdirectory as the plugin root", async
 	assert.ok(!existsSync(join(result.root, "plugins")));
 });
 
+test("git install preserves a contained relative symlink after staging teardown", async (t) => {
+	if (process.platform === "win32")
+		return t.skip("symlink privileges vary on Windows");
+	const repo = initGitRepo();
+	const sub = join(repo.dir, "plugins", "one");
+	mkdirSync(sub, { recursive: true });
+	writeFileSync(
+		join(sub, "real.json"),
+		JSON.stringify({ $schema: PLUGIN_SCHEMA_ID, name: "fixture-relsym" }),
+	);
+	// A relative symlink that stays inside the selected root.
+	symlinkSync("./real.json", join(sub, "plugin.json"));
+	repo.commitAll();
+
+	const target = tempDir();
+	const result = await install(
+		{ kind: "git", url: repo.dir, subdir: "plugins/one" },
+		{ targetDir: target },
+	);
+
+	assert.equal(result.manifest.name, "fixture-relsym");
+	// install() deletes staging in its finally; a rewritten absolute link would
+	// now dangle. existsSync follows the link, so this asserts it still resolves.
+	assert.ok(existsSync(join(result.root, "plugin.json")));
+	assert.ok(existsSync(join(result.root, "real.json")));
+});
+
 test("git install without a subdirectory installs the repository root and drops .git", async () => {
 	const repo = initGitRepo();
 	writePlugin(repo.dir, "fixture-root-plugin");

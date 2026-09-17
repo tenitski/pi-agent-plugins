@@ -202,6 +202,7 @@ export async function install(
 			cpSync(source.path, selectedRoot, {
 				recursive: true,
 				dereference: false,
+				verbatimSymlinks: true,
 			});
 		}
 
@@ -239,7 +240,14 @@ export async function install(
 		mkdirSync(targetRoot, { recursive: true });
 		// Copy rather than rename: staging is in the OS temp dir, which is
 		// frequently a different filesystem from the agent directory.
-		cpSync(selectedRoot, destination, { recursive: true, dereference: false });
+		// verbatimSymlinks keeps relative links relative: without it, cpSync
+		// rewrites them to absolute paths into the staging dir, which dangle
+		// once staging is deleted.
+		cpSync(selectedRoot, destination, {
+			recursive: true,
+			dereference: false,
+			verbatimSymlinks: true,
+		});
 
 		return { manifest, root: destination, source };
 	} finally {
