@@ -111,3 +111,19 @@ test("rejects a symlink that escapes the plugin root", () => {
 	assert.ok(diagnostics[0]);
 	assert.match(diagnostics[0].message, /escapes the plugin root/);
 });
+
+test("dedupes symlink-aliased hooks by canonical realpath", () => {
+	const root = tempDir();
+	// Create a real hook file
+	writeHook(root, "real.ts");
+	// Create two symlinks inside the root both pointing at real.ts
+	symlinkSync(join(root, "real.ts"), join(root, "alias1.ts"));
+	symlinkSync(join(root, "real.ts"), join(root, "alias2.ts"));
+	const { hooks, diagnostics } = discoverPiHooks(
+		pluginWith(root, ["./alias1.ts", "./alias2.ts"]),
+	);
+	// Exactly one hook should be returned
+	assert.equal(hooks.length, 1);
+	// A diagnostic mentioning duplicate should be present
+	assert.ok(diagnostics.some((d) => /duplicate/.test(d.message)));
+});

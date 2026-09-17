@@ -11,11 +11,12 @@ import { extname } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { resolvePluginRelative } from "./paths.ts";
+import { resolveExisting, resolvePluginRelative } from "./paths.ts";
 import {
 	warning,
 	type Diagnostic,
 	type LoadedPlugin,
+	type PiClientExtension,
 	type PluginManifest,
 	type PluginScope,
 } from "./types.ts";
@@ -51,7 +52,7 @@ export function discoverPiHooks(plugin: LoadedPlugin): {
 	hooks: LoadedPiHook[];
 	diagnostics: Diagnostic[];
 } {
-	const raw = (plugin.piExtension as { hooks?: unknown } | undefined)?.hooks;
+	const raw = (plugin.piExtension as PiClientExtension | undefined)?.hooks;
 	if (raw === undefined) return { hooks: [], diagnostics: [] };
 	if (!Array.isArray(raw)) {
 		return {
@@ -104,15 +105,16 @@ export function discoverPiHooks(plugin: LoadedPlugin): {
 			isFile = false;
 		}
 		if (!isFile) {
-			skip(`not a regular file: ${value}`, resolved);
+			skip(`does not exist or is not a regular file: ${value}`, resolved);
 			continue;
 		}
-		if (seen.has(resolved)) {
-			skip(`duplicate hook (same resolved path): ${value}`, resolved);
+		const canonical = resolveExisting(resolved);
+		if (seen.has(canonical)) {
+			skip(`duplicate hook (same resolved path): ${value}`, canonical);
 			continue;
 		}
-		seen.add(resolved);
-		hooks.push({ plugin, path: resolved, relative: value });
+		seen.add(canonical);
+		hooks.push({ plugin, path: canonical, relative: value });
 	}
 
 	return { hooks, diagnostics };
