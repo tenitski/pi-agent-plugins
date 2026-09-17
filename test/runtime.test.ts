@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { statePath } from "../src/paths-client.ts";
 import { PluginRuntime, pluginTrustKey } from "../src/runtime.ts";
 import { grantTrust, readState } from "../src/state.ts";
 import { MCP_SCHEMA_ID, PLUGIN_SCHEMA_ID } from "../src/types.ts";
@@ -172,6 +173,102 @@ test("replacing installed code drops pi-entrypoints trust but keeps mcp", () => 
 		effective = runtime.effectiveCapabilities(rescanned);
 		assert.ok(effective.has("mcp"));
 		assert.equal(effective.has("pi-entrypoints"), false);
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("mcp-trusted plugin with a hook still shows pending for pi-entrypoints", () => {
+	const agentDir = tempDir();
+	const pluginRoot = join(agentDir, "plugins", "demo-hook");
+	createPluginWithMcp(pluginRoot, "demo-hook");
+	mkdirSync(join(pluginRoot, "dev.pi.agent"), { recursive: true });
+	writeFileSync(
+		join(pluginRoot, "dev.pi.agent", "hooks.ts"),
+		"export default () => {};\n",
+	);
+	writeFileSync(
+		join(pluginRoot, "plugin.json"),
+		JSON.stringify({
+			$schema: PLUGIN_SCHEMA_ID,
+			name: "demo-hook",
+			extensions: { "dev.pi.agent": { hooks: ["./dev.pi.agent/hooks.ts"] } },
+		}),
+	);
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		const runtime = new PluginRuntime();
+		runtime.scan();
+		const plugin = runtime.find("demo-hook");
+		assert.ok(plugin);
+
+		// Grant only "mcp", not via trust() (which would grant every missing cap).
+		grantTrust(
+			[{ key: pluginTrustKey(plugin), capabilities: ["mcp"] }],
+			statePath(),
+		);
+		runtime.scan();
+		const rescanned = runtime.find("demo-hook");
+		assert.ok(rescanned);
+
+		const effective = runtime.effectiveCapabilities(rescanned);
+		assert.ok(effective.has("mcp"));
+		assert.equal(effective.has("pi-entrypoints"), false);
+
+		const missing = runtime.missingCapabilities(rescanned);
+		assert.ok(missing.includes("pi-entrypoints"));
+		assert.equal(missing.includes("mcp"), false);
+
+		assert.ok(
+			runtime.pendingTrust().some((p) => p.manifest.name === "demo-hook"),
+		);
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
+test("project plugin gets pi-entrypoints from project trust with no code identity", () => {
+	const agentDir = tempDir();
+	const projectDir = tempDir();
+	const pluginRoot = join(projectDir, ".pi", "plugins", "proj-hook");
+	createPlugin(pluginRoot, "proj-hook");
+	mkdirSync(join(pluginRoot, "dev.pi.agent"), { recursive: true });
+	writeFileSync(
+		join(pluginRoot, "dev.pi.agent", "hooks.ts"),
+		"export default () => {};\n",
+	);
+	writeFileSync(
+		join(pluginRoot, "plugin.json"),
+		JSON.stringify({
+			$schema: PLUGIN_SCHEMA_ID,
+			name: "proj-hook",
+			extensions: { "dev.pi.agent": { hooks: ["./dev.pi.agent/hooks.ts"] } },
+		}),
+	);
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		const runtime = new PluginRuntime();
+		runtime.startSession(projectDir, true);
+		let plugin = runtime.find("proj-hook");
+		assert.ok(plugin);
+		assert.equal(plugin.codeIdentity, undefined);
+
+		grantTrust(
+			[{ key: pluginTrustKey(plugin), capabilities: ["pi-entrypoints"] }],
+			statePath(),
+		);
+		runtime.scan(projectDir, true);
+		plugin = runtime.find("proj-hook");
+		assert.ok(plugin);
+		assert.equal(plugin.codeIdentity, undefined);
+
+		assert.ok(runtime.effectiveCapabilities(plugin).has("pi-entrypoints"));
 	} finally {
 		if (previous === undefined) delete process.env.PI_AGENT_DIR;
 		else process.env.PI_AGENT_DIR = previous;

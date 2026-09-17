@@ -86,7 +86,7 @@ export class PluginRuntime {
 			const legacy = records.get(plugin.manifest.name);
 			const key = pluginTrustKey(plugin);
 			if (legacy && !records.has(key)) {
-				records.set(key, { key, capabilities: legacy.capabilities });
+				records.set(key, { key, capabilities: [...legacy.capabilities] });
 			}
 		}
 
