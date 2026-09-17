@@ -429,7 +429,9 @@ test("git install without a subdirectory installs the repository root and drops 
 	assert.ok(!existsSync(join(result.root, ".git")));
 });
 
-test("git install rejects a subdirectory whose plugin.json escapes it via symlink", async () => {
+test("git install rejects a subdirectory whose plugin.json escapes it via symlink", async (t) => {
+	if (process.platform === "win32")
+		return t.skip("symlink privileges vary on Windows");
 	const repo = initGitRepo();
 	// A sibling holds a real, valid manifest.
 	writePlugin(join(repo.dir, "plugins", "real"), "fixture-real");
@@ -482,7 +484,9 @@ test("git install rejects a subdirectory that is a regular file", async () => {
 	);
 });
 
-test("git install rejects a subdirectory symlinked outside the repository", async () => {
+test("git install rejects a subdirectory symlinked outside the repository", async (t) => {
+	if (process.platform === "win32")
+		return t.skip("symlink privileges vary on Windows");
 	const outside = tempDir();
 	writePlugin(join(outside, "evil"), "fixture-evil");
 
