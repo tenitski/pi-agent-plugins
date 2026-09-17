@@ -120,6 +120,13 @@ export interface ValidationResult<T> {
 
 export type PluginScope = "user" | "project";
 
+/** Shape of `extensions["dev.pi.agent"]` interpreted by this client (§8.1). */
+export interface PiClientExtension {
+	prompts?: string[];
+	themes?: string[];
+	hooks?: string[];
+}
+
 export interface LoadedSkill {
 	/** Directory name under `skills/` (the immediate child directory). */
 	dir: string;
@@ -145,7 +152,7 @@ export interface LoadedPlugin {
 	enabled: boolean;
 	skills: LoadedSkill[];
 	mcpServers: LoadedMcpServer[];
-	/** Contents of `extensions["dev.pi.agent"]`, when present. */
+	/** Contents of `extensions["dev.pi.agent"]` (prompts, themes, hooks), when present. */
 	piExtension?: Record<string, unknown>;
 	diagnostics: Diagnostic[];
 }
