@@ -23,6 +23,7 @@ import { promisify } from "node:util";
 import { x as extractTar } from "tar";
 
 import { loadManifest } from "./manifest.ts";
+import { resolveExisting, resolveInRoot } from "./paths.ts";
 import { userPluginsDir } from "./paths-client.ts";
 import type { PluginManifest } from "./types.ts";
 
@@ -180,20 +181,30 @@ export async function install(
 	const staging = mkdtempSync(join(tmpdir(), "pi-agent-plugin-"));
 
 	try {
-		const staged = join(staging, "plugin");
+		// The fetched source and the selected plugin root are distinct: a Git
+		// source may name a subdirectory, so we clone the whole repository and
+		// then resolve the one directory to install.
+		let selectedRoot: string;
 		if (source.kind === "git") {
-			await cloneGit(source, staged, options.signal);
+			const fetchedRoot = join(staging, "repository");
+			await cloneGit(source, fetchedRoot, options.signal);
+			selectedRoot = resolveGitPluginRoot(fetchedRoot, source.subdir);
 		} else if (source.kind === "npm") {
-			await packNpm(source.spec, staging, staged, options.signal);
+			selectedRoot = join(staging, "plugin");
+			await packNpm(source.spec, staging, selectedRoot, options.signal);
 		} else {
 			if (!existsSync(source.path) || !statSync(source.path).isDirectory()) {
 				throw new Error(`not a directory: ${source.path}`);
 			}
-			cpSync(source.path, staged, { recursive: true, dereference: false });
+			selectedRoot = join(staging, "plugin");
+			cpSync(source.path, selectedRoot, {
+				recursive: true,
+				dereference: false,
+			});
 		}
 
 		// §4.1/§5.1: a plugin without a valid root manifest is not a plugin.
-		const manifestPath = join(staged, "plugin.json");
+		const manifestPath = join(selectedRoot, "plugin.json");
 		if (!existsSync(manifestPath)) {
 			throw new Error(
 				"source has no plugin.json at its root; not an Agent Plugin",
@@ -218,12 +229,38 @@ export async function install(
 		mkdirSync(targetRoot, { recursive: true });
 		// Copy rather than rename: staging is in the OS temp dir, which is
 		// frequently a different filesystem from the agent directory.
-		cpSync(staged, destination, { recursive: true, dereference: false });
+		cpSync(selectedRoot, destination, { recursive: true, dereference: false });
 
 		return { manifest, root: destination, source };
 	} finally {
 		rmSync(staging, { recursive: true, force: true });
 	}
+}
+
+/**
+ * Resolve the plugin directory to install from a cloned repository.
+ *
+ * With no subdirectory, the repository root is the plugin root. With one, the
+ * candidate must resolve inside the filesystem-resolved repository root (via the
+ * shared containment helpers, so a symlink cannot escape), exist, and be a
+ * directory. Errors distinguish containment escape, a missing path, and the
+ * wrong filesystem kind.
+ */
+export function resolveGitPluginRoot(
+	repositoryRoot: string,
+	subdir: string | undefined,
+): string {
+	const root = resolveExisting(repositoryRoot);
+	if (subdir === undefined) return root;
+
+	const candidate = resolveInRoot(root, subdir);
+	if (!candidate)
+		throw new Error(`plugin subdirectory escapes the repository: ${subdir}`);
+	if (!existsSync(candidate))
+		throw new Error(`plugin subdirectory not found: ${subdir}`);
+	if (!statSync(candidate).isDirectory())
+		throw new Error(`plugin subdirectory is not a directory: ${subdir}`);
+	return resolveExisting(candidate);
 }
 
 async function cloneGit(

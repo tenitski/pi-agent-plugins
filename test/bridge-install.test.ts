@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -336,4 +338,106 @@ test("install source parser rejects malformed shorthand subdirectories", () => {
 	]) {
 		assert.ok("error" in parseSource(source), source);
 	}
+});
+
+/** Initialize a committed, network-free Git repository fixture. */
+function initGitRepo(): { dir: string; commitAll: () => void } {
+	const dir = tempDir();
+	const git = (...args: string[]): void => {
+		const result = spawnSync("git", args, { cwd: dir, encoding: "utf-8" });
+		if (result.status !== 0)
+			assert.fail(`git ${args.join(" ")} failed: ${result.stderr}`);
+	};
+	git("init", "-q");
+	git("config", "user.email", "fixture@example.com");
+	git("config", "user.name", "Fixture");
+	return {
+		dir,
+		commitAll: () => {
+			git("add", "-A");
+			git("commit", "-q", "-m", "fixture");
+		},
+	};
+}
+
+function writePlugin(root: string, name: string): void {
+	mkdirSync(root, { recursive: true });
+	writeFileSync(
+		join(root, "plugin.json"),
+		JSON.stringify({ $schema: PLUGIN_SCHEMA_ID, name }),
+	);
+}
+
+test("git install selects only the named subdirectory as the plugin root", async () => {
+	const repo = initGitRepo();
+	writePlugin(join(repo.dir, "plugins", "one"), "fixture-subdir-one");
+	writePlugin(join(repo.dir, "plugins", "two"), "fixture-subdir-two");
+	mkdirSync(join(repo.dir, "unrelated"), { recursive: true });
+	writeFileSync(join(repo.dir, "unrelated", "marker.txt"), "sibling");
+	repo.commitAll();
+
+	const target = tempDir();
+	const result = await install(
+		{ kind: "git", url: repo.dir, subdir: "plugins/one" },
+		{ targetDir: target },
+	);
+
+	assert.equal(result.manifest.name, "fixture-subdir-one");
+	assert.equal(result.root, join(target, "fixture-subdir-one"));
+	assert.ok(existsSync(join(result.root, "plugin.json")));
+	// Only the selected directory is copied — no repository siblings.
+	assert.ok(!existsSync(join(result.root, "unrelated")));
+	assert.ok(!existsSync(join(result.root, "two")));
+	assert.ok(!existsSync(join(result.root, "plugins")));
+});
+
+test("git install rejects a missing subdirectory", async () => {
+	const repo = initGitRepo();
+	writePlugin(join(repo.dir, "plugins", "one"), "fixture-subdir-one");
+	repo.commitAll();
+
+	await assert.rejects(
+		install(
+			{ kind: "git", url: repo.dir, subdir: "plugins/absent" },
+			{ targetDir: tempDir() },
+		),
+		/subdirectory not found/,
+	);
+});
+
+test("git install rejects a subdirectory that is a regular file", async () => {
+	const repo = initGitRepo();
+	writePlugin(join(repo.dir, "plugins", "one"), "fixture-subdir-one");
+	repo.commitAll();
+
+	await assert.rejects(
+		install(
+			{ kind: "git", url: repo.dir, subdir: "plugins/one/plugin.json" },
+			{ targetDir: tempDir() },
+		),
+		/subdirectory is not a directory/,
+	);
+});
+
+test("git install rejects a subdirectory symlinked outside the repository", async () => {
+	const outside = tempDir();
+	writePlugin(join(outside, "evil"), "fixture-evil");
+
+	const repo = initGitRepo();
+	writePlugin(join(repo.dir, "plugins", "one"), "fixture-subdir-one");
+	try {
+		symlinkSync(join(outside, "evil"), join(repo.dir, "escape"));
+	} catch (cause) {
+		// Symlink creation is unavailable (e.g. restricted CI/Windows).
+		return void assert.ok(true, `symlinks unavailable: ${String(cause)}`);
+	}
+	repo.commitAll();
+
+	await assert.rejects(
+		install(
+			{ kind: "git", url: repo.dir, subdir: "escape" },
+			{ targetDir: tempDir() },
+		),
+		/escapes the repository/,
+	);
 });
