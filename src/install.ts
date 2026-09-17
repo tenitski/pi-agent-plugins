@@ -109,7 +109,9 @@ function parseGitShorthand(
 	const rawRepo = match[2];
 	if (!owner || !rawRepo) return null;
 	const repo = rawRepo.endsWith(".git") ? rawRepo.slice(0, -4) : rawRepo;
-	if (repo.length === 0) return null;
+	// `.` and `..` are valid regex matches but not real repositories; fall
+	// through so the generic parser reports an unrecognized source.
+	if (repo.length === 0 || repo === "." || repo === "..") return null;
 
 	if (subdir !== undefined && !isValidSubdir(subdir)) {
 		return { error: `invalid plugin subdirectory: ${subdir}` };

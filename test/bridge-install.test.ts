@@ -341,6 +341,12 @@ test("install source parser keeps hostname-shaped forms on the generic git path"
 	});
 });
 
+test("install source parser rejects shorthand whose repo is a traversal name", () => {
+	for (const source of ["acme/..", "acme/."]) {
+		assert.ok("error" in parseSource(source), source);
+	}
+});
+
 test("install source parser rejects malformed shorthand subdirectories", () => {
 	for (const source of [
 		"Frameio/claude-plugins:",
