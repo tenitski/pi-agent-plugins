@@ -282,3 +282,58 @@ test("install source parser recognizes npm, local, hosted, and pinned git source
 	});
 	assert.ok("error" in parseSource("not a source"));
 });
+
+test("install source parser accepts GitHub owner/repo shorthand with optional subdir and ref", () => {
+	assert.deepEqual(parseSource("Frameio/claude-plugins"), {
+		kind: "git",
+		url: "https://github.com/Frameio/claude-plugins",
+	});
+	assert.deepEqual(parseSource("Frameio/claude-plugins:plugins/infra-aws"), {
+		kind: "git",
+		url: "https://github.com/Frameio/claude-plugins",
+		subdir: "plugins/infra-aws",
+	});
+	assert.deepEqual(parseSource("Frameio/claude-plugins@main"), {
+		kind: "git",
+		url: "https://github.com/Frameio/claude-plugins",
+		ref: "main",
+	});
+	assert.deepEqual(
+		parseSource("Frameio/claude-plugins:plugins/infra-aws@main"),
+		{
+			kind: "git",
+			url: "https://github.com/Frameio/claude-plugins",
+			subdir: "plugins/infra-aws",
+			ref: "main",
+		},
+	);
+	// Trailing .git is stripped from the repo name.
+	assert.deepEqual(parseSource("acme/plugin.git:sub"), {
+		kind: "git",
+		url: "https://github.com/acme/plugin",
+		subdir: "sub",
+	});
+});
+
+test("install source parser keeps hostname-shaped forms on the generic git path", () => {
+	// A dotted first segment is a hostname, not a shorthand owner: unchanged.
+	assert.deepEqual(parseSource("github.com/acme/plugin@v1"), {
+		kind: "git",
+		url: "https://github.com/acme/plugin",
+		ref: "v1",
+	});
+});
+
+test("install source parser rejects malformed shorthand subdirectories", () => {
+	for (const source of [
+		"Frameio/claude-plugins:",
+		"Frameio/claude-plugins:../infra-aws",
+		"Frameio/claude-plugins:plugins/../infra-aws",
+		"Frameio/claude-plugins:/plugins/infra-aws",
+		"Frameio/claude-plugins:./plugins/infra-aws",
+		"Frameio/claude-plugins:plugins\\infra-aws",
+		"Frameio/claude-plugins:plugins//infra-aws",
+	]) {
+		assert.ok("error" in parseSource(source), source);
+	}
+});

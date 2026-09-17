@@ -29,7 +29,7 @@ import type { PluginManifest } from "./types.ts";
 const execFileAsync = promisify(execFile);
 
 export type InstallSource =
-	| { kind: "git"; url: string; ref?: string }
+	| { kind: "git"; url: string; ref?: string; subdir?: string }
 	| { kind: "npm"; spec: string }
 	| { kind: "path"; path: string };
 
@@ -42,8 +42,9 @@ export interface InstallResult {
 /**
  * Parse an install specifier.
  *
- * Accepted: `npm:pkg@version`, `github.com/user/repo`, `https://…`,
- * `git@host:path`, `git:…`, an optional `@ref` suffix, and local paths.
+ * Accepted: `npm:pkg@version`, `owner/repo[:subdir][@ref]` GitHub shorthand,
+ * `github.com/user/repo`, `https://…`, `git@host:path`, `git:…`, an optional
+ * `@ref` suffix, and local paths.
  */
 export function parseSource(spec: string): InstallSource | { error: string } {
 	const trimmed = spec.trim();
@@ -51,6 +52,11 @@ export function parseSource(spec: string): InstallSource | { error: string } {
 	if (trimmed.startsWith("npm:")) return parseNpmSource(trimmed);
 	if (isLocalSource(trimmed))
 		return { kind: "path", path: resolve(expandHome(trimmed)) };
+	// GitHub `owner/repo` shorthand is tried before the generic Git parser: only
+	// this form carries an optional `:subdir`. A non-shorthand input (e.g. a
+	// hostname-shaped `host.tld/path`) returns null and falls through unchanged.
+	const shorthand = parseGitShorthand(trimmed);
+	if (shorthand) return shorthand;
 	return parseGitSource(trimmed, spec);
 }
 
@@ -68,6 +74,66 @@ function expandHome(value: string): string {
 	return value.startsWith("~")
 		? join(process.env.HOME ?? "", value.slice(1))
 		: value;
+}
+
+// Owner uses GitHub's account-name rules (letters, digits, hyphen — no dot),
+// which is what keeps this form distinct from a hostname-shaped generic Git
+// source. Repo additionally allows `.` and `_`.
+const SHORTHAND_REPO = /^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)$/;
+
+/**
+ * Parse GitHub `owner/repo[:subdir][@ref]` shorthand.
+ *
+ * Returns a Git source, an `{ error }` when the input is shorthand-shaped but
+ * its subdirectory is malformed, or `null` when the input is not shorthand at
+ * all (so the caller falls through to the generic Git parser).
+ */
+function parseGitShorthand(
+	value: string,
+): InstallSource | { error: string } | null {
+	// `@` cannot appear in an owner, repo, or a valid subdir, so the first `@`
+	// unambiguously begins the ref (which may itself contain `/`).
+	const atIndex = value.indexOf("@");
+	const beforeRef = atIndex === -1 ? value : value.slice(0, atIndex);
+	const ref = atIndex === -1 ? undefined : value.slice(atIndex + 1) || undefined;
+
+	const colonIndex = beforeRef.indexOf(":");
+	const repoPart = colonIndex === -1 ? beforeRef : beforeRef.slice(0, colonIndex);
+	const subdir = colonIndex === -1 ? undefined : beforeRef.slice(colonIndex + 1);
+
+	const match = SHORTHAND_REPO.exec(repoPart);
+	if (!match) return null;
+
+	const owner = match[1];
+	const rawRepo = match[2];
+	if (!owner || !rawRepo) return null;
+	const repo = rawRepo.endsWith(".git") ? rawRepo.slice(0, -4) : rawRepo;
+	if (repo.length === 0) return null;
+
+	if (subdir !== undefined && !isValidSubdir(subdir)) {
+		return { error: `invalid plugin subdirectory: ${subdir}` };
+	}
+
+	const url = `https://github.com/${owner}/${repo}`;
+	return {
+		kind: "git",
+		url,
+		...(subdir !== undefined ? { subdir } : {}),
+		...(ref ? { ref } : {}),
+	};
+}
+
+/**
+ * A shorthand subdirectory is a forward-slash relative path with no traversal.
+ * Rejecting `:` and `\` also excludes Windows drive and UNC forms; rejecting
+ * empty segments excludes absolute, trailing-slash, and repeated-separator
+ * paths.
+ */
+function isValidSubdir(subdir: string): boolean {
+	if (subdir.includes("\\") || subdir.includes(":") || subdir.includes("\0"))
+		return false;
+	const segments = subdir.split("/");
+	return segments.every((seg) => seg !== "" && seg !== "." && seg !== "..");
 }
 
 function parseGitSource(
