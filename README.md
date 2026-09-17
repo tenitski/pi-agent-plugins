@@ -106,7 +106,9 @@ The `owner/repo[:subdir][@ref]` shorthand installs a plugin from a GitHub
 repository, optionally from a subdirectory of a monorepo. Subdirectory
 selection is currently supported only for this GitHub shorthand, not for
 arbitrary Git URLs. Only the selected directory is copied into the install
-root. Private repositories require a configured noninteractive Git credential
+root. Because a bare `owner/repo` is read as a GitHub source, a local
+directory must be given as an explicit path (`./`, `../`, `/`, or `~`).
+Private repositories require a configured noninteractive Git credential
 helper (for example `gh auth login && gh auth setup-git`); installation never
 prompts, so a missing credential fails fast. This shorthand is a client
 installation convenience, not part of Agent Plugins 1.0 conformance.

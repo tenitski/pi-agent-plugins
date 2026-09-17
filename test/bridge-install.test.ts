@@ -309,11 +309,26 @@ test("install source parser accepts GitHub owner/repo shorthand with optional su
 			ref: "main",
 		},
 	);
-	// Trailing .git is stripped from the repo name.
+	// Trailing .git is stripped from the repo name, with or without a subdir.
 	assert.deepEqual(parseSource("acme/plugin.git:sub"), {
 		kind: "git",
 		url: "https://github.com/acme/plugin",
 		subdir: "sub",
+	});
+	assert.deepEqual(parseSource("acme/plugin.git"), {
+		kind: "git",
+		url: "https://github.com/acme/plugin",
+	});
+	// A trailing bare `@` carries no ref.
+	assert.deepEqual(parseSource("acme/plugin@"), {
+		kind: "git",
+		url: "https://github.com/acme/plugin",
+	});
+	// A ref may itself contain slashes.
+	assert.deepEqual(parseSource("acme/plugin@feature/x"), {
+		kind: "git",
+		url: "https://github.com/acme/plugin",
+		ref: "feature/x",
 	});
 });
 
@@ -389,6 +404,23 @@ test("git install selects only the named subdirectory as the plugin root", async
 	assert.ok(!existsSync(join(result.root, "unrelated")));
 	assert.ok(!existsSync(join(result.root, "two")));
 	assert.ok(!existsSync(join(result.root, "plugins")));
+});
+
+test("git install without a subdirectory installs the repository root and drops .git", async () => {
+	const repo = initGitRepo();
+	writePlugin(repo.dir, "fixture-root-plugin");
+	repo.commitAll();
+
+	const target = tempDir();
+	const result = await install(
+		{ kind: "git", url: repo.dir },
+		{ targetDir: target },
+	);
+
+	assert.equal(result.manifest.name, "fixture-root-plugin");
+	assert.ok(existsSync(join(result.root, "plugin.json")));
+	// The shallow clone's .git is not part of the package.
+	assert.ok(!existsSync(join(result.root, ".git")));
 });
 
 test("git install rejects a missing subdirectory", async () => {
