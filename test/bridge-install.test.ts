@@ -429,6 +429,31 @@ test("git install without a subdirectory installs the repository root and drops 
 	assert.ok(!existsSync(join(result.root, ".git")));
 });
 
+test("git install rejects a subdirectory whose plugin.json escapes it via symlink", async () => {
+	const repo = initGitRepo();
+	// A sibling holds a real, valid manifest.
+	writePlugin(join(repo.dir, "plugins", "real"), "fixture-real");
+	// The selected subdirectory's plugin.json is a symlink to that sibling.
+	mkdirSync(join(repo.dir, "plugins", "one"), { recursive: true });
+	try {
+		symlinkSync(
+			join("..", "real", "plugin.json"),
+			join(repo.dir, "plugins", "one", "plugin.json"),
+		);
+	} catch (cause) {
+		return void assert.ok(true, `symlinks unavailable: ${String(cause)}`);
+	}
+	repo.commitAll();
+
+	await assert.rejects(
+		install(
+			{ kind: "git", url: repo.dir, subdir: "plugins/one" },
+			{ targetDir: tempDir() },
+		),
+		/plugin\.json resolves outside/,
+	);
+});
+
 test("git install rejects a missing subdirectory", async () => {
 	const repo = initGitRepo();
 	writePlugin(join(repo.dir, "plugins", "one"), "fixture-subdir-one");

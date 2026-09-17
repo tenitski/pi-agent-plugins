@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { x as extractTar } from "tar";
 
 import { loadManifest } from "./manifest.ts";
-import { resolveExisting, resolveInRoot } from "./paths.ts";
+import { isContainedResolved, resolveExisting, resolveInRoot } from "./paths.ts";
 import { userPluginsDir } from "./paths-client.ts";
 import type { PluginManifest } from "./types.ts";
 
@@ -211,6 +211,14 @@ export async function install(
 			throw new Error(
 				"source has no plugin.json at its root; not an Agent Plugin",
 			);
+		}
+		// The manifest we validate must be the manifest we install. A symlinked
+		// plugin.json can point outside the selected root (e.g. at a monorepo
+		// sibling); loadManifest would follow it, but cpSync copies the link
+		// verbatim and it dangles once staging is torn down. Reject that here so
+		// a validated install cannot become an unloadable one.
+		if (!isContainedResolved(selectedRoot, manifestPath)) {
+			throw new Error("plugin.json resolves outside the plugin root");
 		}
 		const { value: manifest, diagnostics } = loadManifest(manifestPath);
 		if (!manifest) {
