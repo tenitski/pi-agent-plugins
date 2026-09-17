@@ -396,6 +396,53 @@ test("untrusted and disabled user hooks are not activated", async () => {
 	}
 });
 
+test("hookDiagnostics does not double on repeated activateHooks calls", async () => {
+	const agentDir = tempDir();
+	const src = tempDir();
+	// Declares one missing hook (discovery diagnostic) and one real hook.
+	mkdirSync(src, { recursive: true });
+	writeFileSync(
+		join(src, "plugin.json"),
+		JSON.stringify({
+			$schema: PLUGIN_SCHEMA_ID,
+			name: "diag-hook",
+			extensions: {
+				"dev.pi.agent": {
+					hooks: ["./missing-hook.ts", "./dev.pi.agent/hooks.ts"],
+				},
+			},
+		}),
+	);
+	mkdirSync(join(src, "dev.pi.agent"), { recursive: true });
+	writeFileSync(
+		join(src, "dev.pi.agent", "hooks.ts"),
+		"export default () => {};\n",
+	);
+
+	const previous = process.env.PI_AGENT_DIR;
+	process.env.PI_AGENT_DIR = agentDir;
+	try {
+		await install({ kind: "path", path: src }, {});
+
+		const runtime = new PluginRuntime();
+		runtime.initializeUser();
+		runtime.trust("diag-hook");
+		runtime.scan();
+
+		const pi = fakePi();
+		await runtime.activateHooks(pi as never, "user");
+		const first = runtime.hookDiagnostics.length;
+		assert.ok(first > 0, "expected at least one diagnostic from discovery");
+
+		await runtime.activateHooks(pi as never, "user");
+		const second = runtime.hookDiagnostics.length;
+		assert.equal(second, first, "diagnostics must not accumulate across calls");
+	} finally {
+		if (previous === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previous;
+	}
+});
+
 test("trusted project hook activates only after project trust, and its handler fires", async () => {
 	const agentDir = tempDir();
 	const projectDir = tempDir();

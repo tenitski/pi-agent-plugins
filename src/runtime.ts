@@ -61,10 +61,18 @@ export class PluginRuntime {
 	registry: Registry = { plugins: [], diagnostics: [], records: new Map() };
 	activeCwd = process.cwd();
 	activeProjectTrusted = false;
-	/** Diagnostics accumulated by activateHooks(), surfaced via allDiagnostics(). */
-	hookDiagnostics: Diagnostic[] = [];
+	/** Diagnostics from the most recent activateHooks() call per scope, keyed by scope. */
+	private hookDiagnosticsByScope = new Map<PluginScope, Diagnostic[]>();
 	/** Hooks already activated this runtime instance, keyed `${pluginTrustKey}::${path}`. */
 	private activatedHooks = new Set<string>();
+
+	/** Diagnostics accumulated by activateHooks(), surfaced via allDiagnostics(). */
+	get hookDiagnostics(): Diagnostic[] {
+		return [
+			...(this.hookDiagnosticsByScope.get("user") ?? []),
+			...(this.hookDiagnosticsByScope.get("project") ?? []),
+		];
+	}
 
 	initializeUser(): void {
 		this.scan(process.cwd(), false);
@@ -253,7 +261,7 @@ export class PluginRuntime {
 		}
 
 		diagnostics.push(...(await activatePiHooks(pi, toActivate)));
-		this.hookDiagnostics.push(...diagnostics);
+		this.hookDiagnosticsByScope.set(scope, diagnostics);
 		return diagnostics;
 	}
 
