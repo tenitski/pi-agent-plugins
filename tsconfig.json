@@ -17,5 +17,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "extensions/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "extensions/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/fixtures/**"]
 }

@@ -3,14 +3,26 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { install } from "../src/install.ts";
 import { readInstallGeneration } from "../src/paths-client.ts";
-import { discoverPiHooks } from "../src/pi-hooks.ts";
+import { activatePiHook, activatePiHooks, buildHookContext, discoverPiHooks } from "../src/pi-hooks.ts";
 import { PLUGIN_SCHEMA_ID, type LoadedPlugin } from "../src/types.ts";
 
 function tempDir(): string {
 	return mkdtempSync(join(tmpdir(), "pi-hooks-test-"));
+}
+
+const FIXTURES = join(fileURLToPath(new URL(".", import.meta.url)), "fixtures", "hooks");
+
+function fakePi(): { on: (...a: unknown[]) => void; calls: unknown[] } {
+	const calls: unknown[] = [];
+	return { on: (...a) => calls.push(a), calls };
+}
+
+function hookFor(root: string, file: string): import("../src/pi-hooks.ts").LoadedPiHook {
+	return { plugin: pluginWith(root, [`./${file}`]), path: join(FIXTURES, file), relative: `./${file}` };
 }
 
 /** Minimal LoadedPlugin whose piExtension.hooks is under test. */
@@ -154,4 +166,34 @@ test("install stamps a fresh code identity and overwrites an author-shipped mark
 	const id2 = readInstallGeneration(second.root);
 	assert.ok(id2?.startsWith("install:v1:"));
 	assert.notEqual(id2, id1); // reinstall → new generation
+});
+
+test("buildHookContext freezes context and manifest", () => {
+	const ctx = buildHookContext(hookFor(FIXTURES, "sync-ok.ts"));
+	assert.throws(() => ((ctx as { pluginName: string }).pluginName = "x"));
+	assert.ok(Object.isFrozen(ctx.manifest));
+	assert.ok(ctx.pluginRoot.length > 0);
+});
+
+test("activatePiHook runs a sync default export with pi + context", async () => {
+	(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+	const pi = fakePi();
+	await activatePiHook(pi as never, hookFor(FIXTURES, "sync-ok.ts"));
+	assert.equal(pi.calls.length, 1); // pi.on("tool_call", …) registered
+});
+
+test("activatePiHook awaits an async default export", async () => {
+	(globalThis as { __hookCalls?: unknown[] }).__hookCalls = [];
+	await activatePiHook(fakePi() as never, hookFor(FIXTURES, "async-ok.ts"));
+	assert.equal((globalThis as unknown as { __hookCalls: unknown[] }).__hookCalls.length, 1);
+});
+
+test("activatePiHooks converts each failure to a diagnostic without aborting siblings", async () => {
+	const root = FIXTURES;
+	const hooks = ["no-default.ts", "default-not-function.ts", "import-throws.ts", "rejects.ts", "sync-ok.ts"].map(
+		(f) => hookFor(root, f),
+	);
+	const diagnostics = await activatePiHooks(fakePi() as never, hooks);
+	assert.equal(diagnostics.length, 4); // four bad, one good
+	assert.ok(diagnostics.every((d) => d.severity === "error" && d.section === "8.1"));
 });
