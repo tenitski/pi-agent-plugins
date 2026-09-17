@@ -8,13 +8,22 @@ import type {
 
 import { install, parseSource, uninstall } from "./install.ts";
 import { projectPluginsDir, userPluginsDir } from "./paths-client.ts";
-import { formatDiagnostic, formatInfo, formatList } from "./report.ts";
+import { discoverPiHooks } from "./pi-hooks.ts";
+import { formatDiagnostic, formatInfo, formatList, type TrustView } from "./report.ts";
 import type { PluginRuntime } from "./runtime.ts";
 import {
 	PI_NAMESPACE,
 	SUPPORTED_SPEC_VERSION,
 	type LoadedPlugin,
 } from "./types.ts";
+
+/** Adapts the runtime's capability queries to the shape `report.ts` consumes. */
+function trustView(runtime: PluginRuntime): TrustView {
+	return {
+		effective: (plugin) => runtime.effectiveCapabilities(plugin),
+		missing: (plugin) => runtime.missingCapabilities(plugin),
+	};
+}
 
 const SUBCOMMANDS = [
 	"list",
@@ -46,7 +55,7 @@ export function registerPluginCommand(
 	const handlers = createHandlers(environment);
 
 	pi.registerCommand("plugin", {
-		description: `Manage Agent Plugins ${SUPPORTED_SPEC_VERSION} packages (skills + MCP servers)`,
+		description: `Manage Agent Plugins ${SUPPORTED_SPEC_VERSION} packages (skills + MCP servers + Pi hooks)`,
 		getArgumentCompletions: (prefix) => completions(prefix, runtime),
 		handler: async (args, ctx) => {
 			const [sub = "list", ...rest] = args.trim().split(/\s+/).filter(Boolean);
@@ -70,11 +79,7 @@ function createHandlers(
 	const { pi, runtime } = environment;
 	return {
 		list: async (_argument, ctx) =>
-			show(
-				pi,
-				ctx,
-				formatList(runtime.registry.plugins, runtime.trustedNames),
-			),
+			show(pi, ctx, formatList(runtime.registry.plugins, trustView(runtime))),
 		info: async (argument, ctx) => showPluginInfo(pi, runtime, argument, ctx),
 		install: async (argument, ctx) => handleInstall(pi, runtime, argument, ctx),
 		uninstall: async (argument, ctx) => handleUninstall(runtime, argument, ctx),
@@ -128,7 +133,7 @@ function showPluginInfo(
 	ctx: ExtensionContext,
 ): void {
 	const plugin = requirePlugin(runtime, name, ctx);
-	if (plugin) show(pi, ctx, formatInfo(plugin, runtime.trustedNames));
+	if (plugin) show(pi, ctx, formatInfo(plugin, trustView(runtime)));
 }
 
 async function handleInstall(
@@ -160,7 +165,7 @@ async function handleInstall(
 			`Installed ${result.manifest.name}${serverCount > 0 ? ` (${serverCount} MCP server(s) need /plugin trust)` : ""}. Run /plugin reload to load it.`,
 			"info",
 		);
-		if (plugin) show(pi, ctx, formatInfo(plugin, runtime.trustedNames));
+		if (plugin) show(pi, ctx, formatInfo(plugin, trustView(runtime)));
 	} catch (cause) {
 		fail(ctx, cause instanceof Error ? cause.message : String(cause));
 	}
@@ -214,9 +219,12 @@ async function handleTrust(
 ): Promise<void> {
 	const plugin = requirePlugin(runtime, name, ctx);
 	if (!plugin) return;
+	const granted = runtime.missingCapabilities(plugin);
 	runtime.trust(plugin.manifest.name);
 	ctx.ui.notify(
-		`Trusted ${plugin.manifest.name}. Reloading MCP runtime…`,
+		granted.length > 0
+			? `Trusted ${plugin.manifest.name} for: ${granted.join(", ")}. Reloading…`
+			: `${plugin.manifest.name} has no pending capabilities to trust. Reloading…`,
 		"info",
 	);
 	await ctx.reload();
@@ -241,6 +249,17 @@ async function handleReload(
 }
 
 function formatDoctor(runtime: PluginRuntime): string {
+	const trustedCount = runtime.registry.plugins.filter(
+		(plugin) => runtime.effectiveCapabilities(plugin).size > 0,
+	).length;
+	let hooksDeclared = 0;
+	let hooksTrusted = 0;
+	for (const plugin of runtime.registry.plugins) {
+		const declared = discoverPiHooks(plugin).hooks.length;
+		hooksDeclared += declared;
+		if (declared > 0 && runtime.effectiveCapabilities(plugin).has("pi-entrypoints"))
+			hooksTrusted += declared;
+	}
 	const lines = [
 		`Agent Plugins ${SUPPORTED_SPEC_VERSION} client`,
 		"",
@@ -248,12 +267,14 @@ function formatDoctor(runtime: PluginRuntime): string {
 		`user root:     ${userPluginsDir()}`,
 		`project root:  ${projectPluginsDir(runtime.activeCwd)}`,
 		`plugins:       ${runtime.registry.plugins.length}`,
-		`trusted:       ${runtime.trustedNames.size}`,
+		`trusted:       ${trustedCount}`,
+		`hooks:         ${hooksDeclared} declared, ${hooksTrusted} trusted`,
 		"",
-		"components:    skills (native), MCP servers (via pi-mcp-adapter)",
+		"components:    skills (native), MCP servers (via pi-mcp-adapter), Pi hooks (in-process)",
 		"transports:    stdio, streamable-http without configured headers",
 		"",
 	];
+	// hookDiagnostics is already folded into allDiagnostics(); no need to append it again.
 	const diagnostics = runtime.allDiagnostics();
 	if (diagnostics.length === 0) return [...lines, "No diagnostics."].join("\n");
 	return [...lines, "diagnostics:", ...diagnostics.map(formatDiagnostic)].join(

@@ -138,15 +138,6 @@ export class PluginRuntime {
 		return effective;
 	}
 
-	/** Names of plugins that currently hold any effective trust capability. */
-	get trustedNames(): Set<string> {
-		return new Set(
-			this.registry.plugins
-				.filter((p) => this.effectiveCapabilities(p).size > 0)
-				.map((p) => p.manifest.name),
-		);
-	}
-
 	find(name: string): LoadedPlugin | undefined {
 		return this.registry.plugins.find(
 			(plugin) => plugin.manifest.name === name,
@@ -175,12 +166,6 @@ export class PluginRuntime {
 			this.registry.records = new Map(merged.trusted.map((r) => [r.key, r]));
 		}
 		return this.sync();
-	}
-
-	trustMany(names: readonly string[]): RuntimeSyncResult {
-		let result: RuntimeSyncResult = { changed: false, diagnostics: [] };
-		for (const name of names) result = this.trust(name);
-		return result;
 	}
 
 	/** Capabilities the plugin declares but does not yet effectively hold. */

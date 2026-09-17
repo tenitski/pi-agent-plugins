@@ -13,7 +13,7 @@ It lets Pi load portable plugin directories containing:
 
 - **Agent Skills** from immediate `skills/*/SKILL.md` children
 - **MCP servers** from root `mcp.json`, using [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) as the MCP runtime
-- Optional Pi-specific resources under the `dev.pi.agent` client-extension namespace
+- Optional Pi-specific resources — prompts, themes, and trusted in-process hooks — under the `dev.pi.agent` client-extension namespace
 
 The loader implements the spec's closed schemas, filesystem containment, narrow component failure boundaries, plugin-variable expansion, persistent `PLUGIN_DATA`, and transport rules.
 
@@ -202,6 +202,48 @@ Portable components remain in the fixed standard locations. Pi-only additions ca
 ```
 
 All declared paths must begin with `./` and remain within the filesystem-resolved plugin root. Other extension namespaces are ignored without validation, as required by Agent Plugins §8.1.
+
+## Pi hooks
+
+`extensions["dev.pi.agent"].hooks` lets a plugin declare in-process Pi hook modules:
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pi-enhanced-plugin",
+  "extensions": {
+    "dev.pi.agent": {
+      "hooks": ["./dev.pi.agent/hooks.ts"]
+    }
+  }
+}
+```
+
+Each declared path must begin with `./`, resolve to a contained `.ts`, `.js`, `.mjs`, or `.cjs` file, and export a default function matching:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+interface AgentPluginContext {
+  pluginName: string;
+  pluginRoot: string;
+  pluginData: string;
+  scope: "user" | "project";
+  manifest: Readonly<Record<string, unknown>>;
+}
+
+export default (pi: ExtensionAPI, ctx: AgentPluginContext) => {
+  pi.on("tool_call", (event) => {
+    // ...
+  });
+};
+```
+
+`dev.pi.agent.hooks` are **Pi client hooks**: focused, in-process modules loaded through this client, distinct from the wider Agent Plugins ecosystem's declarative `hooks.json` convention. Other Agent Plugins clients are free to ignore this field.
+
+Hooks require explicit `pi-entrypoints` trust (separate from `mcp` trust) and run **in-process with the user's own permissions** — once trusted, a hook can do anything the user's Pi session can do. Only trust plugins whose hook source you have reviewed.
+
+Because hooks are Pi-specific client policy, portable skills bundled in the same plugin cannot rely on `${PLUGIN_DATA}` expansion; that placeholder is only guaranteed for stdio MCP subprocess `args`, `env`, and `cwd`. A hook receives its data directory directly as `ctx.pluginData`.
 
 ## Transport support
 

@@ -7,13 +7,13 @@ _Last updated: 2026-08-06_
 | Item | Value |
 | --- | --- |
 | Package | `pi-agent-plugins` |
-| Current release | `0.1.1` |
+| Current release | `0.1.8` |
 | License | MIT |
 | Runtime | Node.js 20+, Pi 0.84+ |
 | GitHub | <https://github.com/BlockedPath/pi-agent-plugins> |
 | npm | <https://www.npmjs.com/package/pi-agent-plugins> |
 | Pi gallery | <https://pi.dev/packages/pi-agent-plugins> |
-| v0.1.1 release | <https://github.com/BlockedPath/pi-agent-plugins/releases/tag/v0.1.1> |
+| v0.1.8 release | <https://github.com/BlockedPath/pi-agent-plugins/releases/tag/v0.1.8> |
 | Portable standard | Agent Plugins 1.0.0, status **Published** |
 | MCP runtime | [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter) |
 
@@ -25,7 +25,7 @@ This is a community-maintained Agent Plugins client for Pi, not an official rele
 
 - Agent Skills at immediate `skills/<name>/SKILL.md` directories
 - MCP servers from root `mcp.json`
-- optional Pi-specific prompts and themes through `extensions["dev.pi.agent"]`
+- optional Pi-specific prompts, themes, and trusted in-process hooks through `extensions["dev.pi.agent"]`
 
 Plugin sources can come from npm, Git, or local directories.
 
