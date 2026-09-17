@@ -4,6 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -78,4 +79,30 @@ export function piMcpConfigPath(): string {
 /** pi-mcp-adapter's project-local MCP config. */
 export function projectPiMcpConfigPath(cwd: string): string {
 	return join(cwd, ".pi", "mcp.json");
+}
+
+/** Client-owned install-generation marker written by the installer. */
+export const INSTALL_MARKER = ".pi-install-id";
+
+/**
+ * Read the install generation from a plugin root, or `undefined`.
+ * Returns an opaque identity string; the format is client-private.
+ */
+export function readInstallGeneration(root: string): string | undefined {
+	try {
+		const raw: unknown = JSON.parse(
+			readFileSync(join(root, INSTALL_MARKER), "utf-8"),
+		);
+		if (
+			typeof raw === "object" &&
+			raw !== null &&
+			(raw as { version?: unknown }).version === 1 &&
+			typeof (raw as { id?: unknown }).id === "string"
+		) {
+			return `install:v1:${(raw as { id: string }).id}`;
+		}
+	} catch {
+		// Missing/unreadable/malformed marker → no identity (fails closed later).
+	}
+	return undefined;
 }

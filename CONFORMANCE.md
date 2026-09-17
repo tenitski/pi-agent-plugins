@@ -86,9 +86,9 @@ Implementation: `src/mcp-config.ts`, `src/mcp-bridge.ts`
 - [x] Client-specific manifest data is read only from `extensions["dev.pi.agent"]`.
 - [x] Unknown namespaces are ignored without validation.
 - [x] Pi-native prompt and theme paths are contained plugin-relative paths.
-- [ ] No file-only `dev.pi.agent/` directory behavior is currently defined. This is optional because a client may use manifest data, a directory, or both.
+- [x] The `dev.pi.agent/` directory slot is used to hold trusted, in-process Pi hook modules declared under `extensions["dev.pi.agent"].hooks`. This is optional Pi client policy, not a portable Agent Plugins requirement; other clients may ignore the field, and a plugin need not use the directory at all.
 
-Implementation: `src/manifest.ts`, `extensions/index.ts`
+Implementation: `src/manifest.ts`, `src/pi-hooks.ts`, `src/runtime.ts`, `extensions/index.ts`
 
 ## Environment and expansion (§9)
 

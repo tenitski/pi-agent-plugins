@@ -5,7 +5,8 @@
  * mode, where `ctx.ui` is unavailable.
  */
 
-import type { Diagnostic, LoadedPlugin } from "./types.ts";
+import { discoverPiHooks } from "./pi-hooks.ts";
+import type { Diagnostic, LoadedPlugin, TrustCapability } from "./types.ts";
 
 const SEVERITY_MARK: Record<Diagnostic["severity"], string> = {
 	error: "x",
@@ -13,29 +14,31 @@ const SEVERITY_MARK: Record<Diagnostic["severity"], string> = {
 	info: "-",
 };
 
+/** Injected view over a plugin's currently-held and still-missing trust capabilities. */
+export interface TrustView {
+	effective: (plugin: LoadedPlugin) => Set<TrustCapability>;
+	missing: (plugin: LoadedPlugin) => TrustCapability[];
+}
+
 export function formatDiagnostic(diagnostic: Diagnostic): string {
 	const mark = SEVERITY_MARK[diagnostic.severity];
 	const where = diagnostic.component ? ` (${diagnostic.component})` : "";
 	return `  ${mark} §${diagnostic.section} ${diagnostic.message}${where}`;
 }
 
-function statusOf(plugin: LoadedPlugin, trusted: ReadonlySet<string>): string {
+function statusOf(plugin: LoadedPlugin, trust: TrustView): string {
 	if (!plugin.enabled) return "disabled";
 	const hasErrors = plugin.diagnostics.some((d) => d.severity === "error");
 	if (hasErrors) return "degraded";
-	if (plugin.mcpServers.length > 0 && !trusted.has(plugin.manifest.name))
-		return "untrusted";
+	if (trust.missing(plugin).length > 0) return "untrusted";
 	return "enabled";
 }
 
-function formatPluginLine(
-	plugin: LoadedPlugin,
-	trusted: ReadonlySet<string>,
-): string {
+function formatPluginLine(plugin: LoadedPlugin, trust: TrustView): string {
 	const { name, version } = plugin.manifest;
 	const parts = [
 		`${name}${version ? `@${version}` : ""}`,
-		`[${statusOf(plugin, trusted)}]`,
+		`[${statusOf(plugin, trust)}]`,
 	];
 	const components: string[] = [];
 	if (plugin.skills.length > 0)
@@ -54,14 +57,14 @@ function formatPluginLine(
 
 export function formatList(
 	plugins: readonly LoadedPlugin[],
-	trusted: ReadonlySet<string>,
+	trust: TrustView,
 ): string {
 	if (plugins.length === 0) {
 		return "No Agent Plugins installed. Use /plugin install <source> to add one.";
 	}
 	const lines = [`Agent Plugins (${plugins.length}):`, ""];
 	for (const plugin of plugins) {
-		lines.push(formatPluginLine(plugin, trusted));
+		lines.push(formatPluginLine(plugin, trust));
 		const problems = plugin.diagnostics.filter((d) => d.severity !== "info");
 		for (const diagnostic of problems) lines.push(formatDiagnostic(diagnostic));
 	}
@@ -110,18 +113,50 @@ function componentLines(plugin: LoadedPlugin): string[] {
 	return lines;
 }
 
-export function formatInfo(
+/** In-process `dev.pi.agent` hook modules the plugin declares, plus discovery diagnostics. */
+function hookLines(
+	hooks: ReturnType<typeof discoverPiHooks>["hooks"],
+	diagnostics: Diagnostic[],
+): string[] {
+	if (hooks.length === 0 && diagnostics.length === 0) return [];
+	const lines = ["", "hooks:"];
+	for (const hook of hooks) lines.push(`  ${hook.relative}`);
+	for (const diagnostic of diagnostics) lines.push(formatDiagnostic(diagnostic));
+	return lines;
+}
+
+/** Per-capability trust status, shown only for capabilities the plugin actually declares. */
+function trustLines(
 	plugin: LoadedPlugin,
-	trusted: ReadonlySet<string>,
-): string {
+	trust: TrustView,
+	hasHooks: boolean,
+): string[] {
+	const hasMcp = plugin.mcpServers.length > 0;
+	if (!hasMcp && !hasHooks) return [];
+	const effective = trust.effective(plugin);
+	const status = (capability: TrustCapability): string =>
+		effective.has(capability) ? "trusted" : "pending";
+	const lines = ["", "trust:"];
+	if (hasMcp) lines.push(`  mcp: ${status("mcp")}`);
+	if (hasHooks) lines.push(`  pi-entrypoints: ${status("pi-entrypoints")}`);
+	return lines;
+}
+
+export function formatInfo(plugin: LoadedPlugin, trust: TrustView): string {
 	const { manifest } = plugin;
 	const lines = [
-		`${manifest.name}${manifest.version ? `@${manifest.version}` : ""}  [${statusOf(plugin, trusted)}]`,
+		`${manifest.name}${manifest.version ? `@${manifest.version}` : ""}  [${statusOf(plugin, trust)}]`,
 		"",
 	];
 	if (manifest.description) lines.push(manifest.description, "");
 
-	lines.push(...metadataLines(plugin), ...componentLines(plugin));
+	const discovered = discoverPiHooks(plugin);
+	lines.push(
+		...metadataLines(plugin),
+		...componentLines(plugin),
+		...hookLines(discovered.hooks, discovered.diagnostics),
+		...trustLines(plugin, trust, discovered.hooks.length > 0),
+	);
 
 	// Namespaces other than this client's are shown but never interpreted (§8.1).
 	const namespaces = Object.keys(manifest.extensions ?? {});

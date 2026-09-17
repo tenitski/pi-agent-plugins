@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add trusted Pi hooks via `extensions["dev.pi.agent"].hooks`: in-process hook
+  modules loaded through Jiti, gated by capability-aware trust (`mcp` and
+  `pi-entrypoints` are granted independently) with install-generation
+  code-identity invalidation so replaced package code loses `pi-entrypoints`
+  trust until re-reviewed and re-trusted.
+- Surface hooks in `/plugin info`, `/plugin trust`, and `/plugin doctor`, and
+  prompt separately for `Pi hook:` and `MCP server:` capabilities on first use.
+
 ## 0.1.8
 
 - Release from the self-hosted Windows runner using an `NPM_TOKEN` secret

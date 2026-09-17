@@ -54,6 +54,7 @@
     "test": "node --test --experimental-strip-types test/*.test.ts"
   },
   "dependencies": {
+    "jiti": "^2.7.0",
     "tar": "^7.5.10",
     "yaml": "^2.8.1"
   },

@@ -1,5 +1,9 @@
 /** Runtime registry and host integration, separated from the Pi entry point. */
 
+import { mkdirSync } from "node:fs";
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
 import { loadAll } from "./loader.ts";
 import {
 	prepareDataDirs,
@@ -13,13 +17,26 @@ import {
 	projectPluginsDir,
 	userPluginsDir,
 } from "./paths-client.ts";
-import { readState, setDisabled, setTrustedMany } from "./state.ts";
-import type { Diagnostic, LoadedPlugin, PluginScope } from "./types.ts";
+import {
+	activatePiHooks,
+	discoverPiHooks,
+	type LoadedPiHook,
+} from "./pi-hooks.ts";
+import { grantTrust, readState, setDisabled } from "./state.ts";
+import {
+	error,
+	type Diagnostic,
+	type LoadedPlugin,
+	type PluginScope,
+	type TrustCapability,
+	type TrustedPluginRecord,
+} from "./types.ts";
 
 export interface Registry {
 	plugins: LoadedPlugin[];
 	diagnostics: Diagnostic[];
-	trusted: Set<string>;
+	/** Persisted trust records keyed by pluginTrustKey(). */
+	records: Map<string, TrustedPluginRecord>;
 }
 
 export interface ResourcePaths {
@@ -40,20 +57,22 @@ export function pluginTrustKey(plugin: LoadedPlugin): string {
 		: `project:${plugin.root}:${plugin.manifest.name}`;
 }
 
-function isStoredTrusted(
-	plugin: LoadedPlugin,
-	stored: ReadonlySet<string>,
-): boolean {
-	if (stored.has(pluginTrustKey(plugin))) return true;
-	// Migrate the original name-only state for user plugins only. Never apply a
-	// legacy user trust decision to a project plugin with the same manifest name.
-	return plugin.scope === "user" && stored.has(plugin.manifest.name);
-}
-
 export class PluginRuntime {
-	registry: Registry = { plugins: [], diagnostics: [], trusted: new Set() };
+	registry: Registry = { plugins: [], diagnostics: [], records: new Map() };
 	activeCwd = process.cwd();
 	activeProjectTrusted = false;
+	/** Diagnostics from the most recent activateHooks() call per scope, keyed by scope. */
+	private hookDiagnosticsByScope = new Map<PluginScope, Diagnostic[]>();
+	/** Hooks already activated this runtime instance, keyed `${pluginTrustKey}::${path}`. */
+	private activatedHooks = new Set<string>();
+
+	/** Diagnostics accumulated by activateHooks(), surfaced via allDiagnostics(). */
+	get hookDiagnostics(): Diagnostic[] {
+		return [
+			...(this.hookDiagnosticsByScope.get("user") ?? []),
+			...(this.hookDiagnosticsByScope.get("project") ?? []),
+		];
+	}
 
 	initializeUser(): void {
 		this.scan(process.cwd(), false);
@@ -79,18 +98,44 @@ export class PluginRuntime {
 			roots.push({ dir: projectPluginsDir(cwd), scope: "project" });
 
 		const report = loadAll(roots, new Set(state.disabled));
-		const storedTrust = new Set(state.trusted);
-		const trusted = new Set(
-			report.plugins.flatMap((plugin) =>
-				isStoredTrusted(plugin, storedTrust) ? [plugin.manifest.name] : [],
-			),
-		);
+
+		const records = new Map<string, TrustedPluginRecord>();
+		for (const record of state.trusted) records.set(record.key, record);
+		// Migrate legacy name-only user trust to the scoped key as mcp-only.
+		for (const plugin of report.plugins) {
+			if (plugin.scope !== "user") continue;
+			const legacy = records.get(plugin.manifest.name);
+			const key = pluginTrustKey(plugin);
+			if (legacy && !records.has(key)) {
+				records.set(key, { key, capabilities: [...legacy.capabilities] });
+			}
+		}
+
 		this.registry = {
 			plugins: report.plugins,
 			diagnostics: report.diagnostics,
-			trusted,
+			records,
 		};
 		return this.registry;
+	}
+
+	/** Capabilities that are actually in force for this plugin instance now. */
+	effectiveCapabilities(plugin: LoadedPlugin): Set<TrustCapability> {
+		const record = this.registry.records.get(pluginTrustKey(plugin));
+		const effective = new Set<TrustCapability>();
+		if (!record) return effective;
+		if (record.capabilities.includes("mcp")) effective.add("mcp");
+		if (record.capabilities.includes("pi-entrypoints")) {
+			// Project plugins carry no codeIdentity; gate on project trust (already
+			// applied by only scanning project plugins when trusted). User plugins
+			// require the stored identity to match the installed marker.
+			const ok =
+				plugin.scope === "project" ||
+				(plugin.codeIdentity !== undefined &&
+					record.codeIdentity === plugin.codeIdentity);
+			if (ok) effective.add("pi-entrypoints");
+		}
+		return effective;
 	}
 
 	find(name: string): LoadedPlugin | undefined {
@@ -106,26 +151,41 @@ export class PluginRuntime {
 	}
 
 	trust(name: string): RuntimeSyncResult {
-		return this.trustMany([name]);
+		const plugin = this.find(name);
+		if (!plugin) return this.sync();
+		const missing = this.missingCapabilities(plugin);
+		const grants = missing.map((cap) => ({
+			key: pluginTrustKey(plugin),
+			capabilities: [cap] as TrustCapability[],
+			...(cap === "pi-entrypoints" && plugin.codeIdentity
+				? { codeIdentity: plugin.codeIdentity }
+				: {}),
+		}));
+		if (grants.length > 0) {
+			const merged = grantTrust(grants);
+			this.registry.records = new Map(merged.trusted.map((r) => [r.key, r]));
+		}
+		return this.sync();
 	}
 
-	trustMany(names: readonly string[]): RuntimeSyncResult {
-		const plugins = names.flatMap((name) => {
-			const plugin = this.find(name);
-			return plugin ? [plugin] : [];
-		});
-		setTrustedMany(plugins.map(pluginTrustKey));
-		for (const plugin of plugins)
-			this.registry.trusted.add(plugin.manifest.name);
-		return this.sync();
+	/** Capabilities the plugin declares but does not yet effectively hold. */
+	missingCapabilities(plugin: LoadedPlugin): TrustCapability[] {
+		const effective = this.effectiveCapabilities(plugin);
+		const missing: TrustCapability[] = [];
+		if (plugin.mcpServers.length > 0 && !effective.has("mcp"))
+			missing.push("mcp");
+		if (
+			discoverPiHooks(plugin).hooks.length > 0 &&
+			!effective.has("pi-entrypoints")
+		)
+			missing.push("pi-entrypoints");
+		return missing;
 	}
 
 	pendingTrust(): LoadedPlugin[] {
 		return this.registry.plugins.filter(
 			(plugin) =>
-				plugin.enabled &&
-				plugin.mcpServers.length > 0 &&
-				!this.registry.trusted.has(plugin.manifest.name),
+				plugin.enabled && this.missingCapabilities(plugin).length > 0,
 		);
 	}
 
@@ -133,7 +193,61 @@ export class PluginRuntime {
 		return [
 			...this.registry.diagnostics,
 			...this.registry.plugins.flatMap((plugin) => plugin.diagnostics),
+			...this.hookDiagnostics,
 		];
+	}
+
+	/**
+	 * Activate trusted in-process Pi hooks for one scope.
+	 *
+	 * Idempotent per runtime instance: a hook already activated (by trust key +
+	 * path) is skipped so re-invocation (e.g. a rescanned session_start) never
+	 * double-registers it.
+	 */
+	async activateHooks(
+		pi: ExtensionAPI,
+		scope: PluginScope,
+	): Promise<Diagnostic[]> {
+		const diagnostics: Diagnostic[] = [];
+		const eligible = this.registry.plugins.filter(
+			(plugin) =>
+				plugin.enabled &&
+				plugin.scope === scope &&
+				this.effectiveCapabilities(plugin).has("pi-entrypoints"),
+		);
+
+		const toActivate: LoadedPiHook[] = [];
+		for (const plugin of eligible) {
+			const discovered = discoverPiHooks(plugin);
+			diagnostics.push(...discovered.diagnostics);
+			if (discovered.hooks.length === 0) continue;
+
+			const pending = discovered.hooks.filter(
+				(hook) => !this.activatedHooks.has(`${pluginTrustKey(plugin)}::${hook.path}`),
+			);
+			if (pending.length === 0) continue;
+
+			try {
+				mkdirSync(plugin.dataDir, { recursive: true, mode: 0o700 });
+			} catch (cause) {
+				diagnostics.push(
+					error("9.1", `cannot prepare plugin data dir: ${String(cause)}`, {
+						path: plugin.dataDir,
+						component: plugin.manifest.name,
+					}),
+				);
+				continue;
+			}
+
+			for (const hook of pending) {
+				this.activatedHooks.add(`${pluginTrustKey(plugin)}::${hook.path}`);
+				toActivate.push(hook);
+			}
+		}
+
+		diagnostics.push(...(await activatePiHooks(pi, toActivate)));
+		this.hookDiagnosticsByScope.set(scope, diagnostics);
+		return diagnostics;
 	}
 
 	discoverResources(cwd: string): ResourcePaths {
@@ -156,7 +270,7 @@ export class PluginRuntime {
 	sync(includeProject = this.activeProjectTrusted): RuntimeSyncResult {
 		const eligible = this.registry.plugins.filter(
 			(plugin) =>
-				plugin.enabled && this.registry.trusted.has(plugin.manifest.name),
+				plugin.enabled && this.effectiveCapabilities(plugin).has("mcp"),
 		);
 		const preparation = prepareDataDirs(eligible);
 		const diagnostics = [...preparation.diagnostics];
