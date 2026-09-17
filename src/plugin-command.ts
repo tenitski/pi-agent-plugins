@@ -73,7 +73,7 @@ function createHandlers(
 			show(
 				pi,
 				ctx,
-				formatList(runtime.registry.plugins, runtime.registry.trusted),
+				formatList(runtime.registry.plugins, runtime.trustedNames),
 			),
 		info: async (argument, ctx) => showPluginInfo(pi, runtime, argument, ctx),
 		install: async (argument, ctx) => handleInstall(pi, runtime, argument, ctx),
@@ -128,7 +128,7 @@ function showPluginInfo(
 	ctx: ExtensionContext,
 ): void {
 	const plugin = requirePlugin(runtime, name, ctx);
-	if (plugin) show(pi, ctx, formatInfo(plugin, runtime.registry.trusted));
+	if (plugin) show(pi, ctx, formatInfo(plugin, runtime.trustedNames));
 }
 
 async function handleInstall(
@@ -160,7 +160,7 @@ async function handleInstall(
 			`Installed ${result.manifest.name}${serverCount > 0 ? ` (${serverCount} MCP server(s) need /plugin trust)` : ""}. Run /plugin reload to load it.`,
 			"info",
 		);
-		if (plugin) show(pi, ctx, formatInfo(plugin, runtime.registry.trusted));
+		if (plugin) show(pi, ctx, formatInfo(plugin, runtime.trustedNames));
 	} catch (cause) {
 		fail(ctx, cause instanceof Error ? cause.message : String(cause));
 	}
@@ -248,7 +248,7 @@ function formatDoctor(runtime: PluginRuntime): string {
 		`user root:     ${userPluginsDir()}`,
 		`project root:  ${projectPluginsDir(runtime.activeCwd)}`,
 		`plugins:       ${runtime.registry.plugins.length}`,
-		`trusted:       ${runtime.registry.trusted.size}`,
+		`trusted:       ${runtime.trustedNames.size}`,
 		"",
 		"components:    skills (native), MCP servers (via pi-mcp-adapter)",
 		"transports:    stdio, streamable-http without configured headers",

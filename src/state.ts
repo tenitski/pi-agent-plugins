@@ -9,20 +9,72 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { statePath } from "./paths-client.ts";
+import type { TrustCapability, TrustedPluginRecord } from "./types.ts";
 
 export interface PluginState {
 	/** Plugin names the user has explicitly disabled. */
 	disabled: string[];
-	/** Plugin names whose MCP servers the user has approved for execution. */
-	trusted: string[];
+	/** Trust grants per installed plugin instance. */
+	trusted: TrustedPluginRecord[];
 }
 
 const EMPTY: PluginState = { disabled: [], trusted: [] };
+const CAPABILITIES: readonly TrustCapability[] = ["mcp", "pi-entrypoints"];
 
 function stringArray(value: unknown): string[] {
 	return Array.isArray(value)
 		? value.filter((v): v is string => typeof v === "string")
 		: [];
+}
+
+function parseCapabilities(value: unknown): TrustCapability[] {
+	if (!Array.isArray(value)) return [];
+	return CAPABILITIES.filter((cap) => value.includes(cap));
+}
+
+function mergeInto(
+	byKey: Map<string, TrustedPluginRecord>,
+	record: TrustedPluginRecord,
+): void {
+	const existing = byKey.get(record.key);
+	if (!existing) {
+		byKey.set(record.key, {
+			key: record.key,
+			capabilities: [...new Set(record.capabilities)],
+			...(record.codeIdentity ? { codeIdentity: record.codeIdentity } : {}),
+		});
+		return;
+	}
+	existing.capabilities = [
+		...new Set([...existing.capabilities, ...record.capabilities]),
+	];
+	if (record.codeIdentity) existing.codeIdentity = record.codeIdentity;
+}
+
+/** Accept legacy strings (→ mcp only) and new records; drop anything malformed. */
+function parseTrusted(value: unknown): TrustedPluginRecord[] {
+	if (!Array.isArray(value)) return [];
+	const byKey = new Map<string, TrustedPluginRecord>();
+	for (const entry of value) {
+		if (typeof entry === "string") {
+			mergeInto(byKey, { key: entry, capabilities: ["mcp"] });
+			continue;
+		}
+		if (typeof entry === "object" && entry !== null) {
+			const key = (entry as { key?: unknown }).key;
+			if (typeof key !== "string") continue;
+			const capabilities = parseCapabilities(
+				(entry as { capabilities?: unknown }).capabilities,
+			);
+			const codeIdentity = (entry as { codeIdentity?: unknown }).codeIdentity;
+			mergeInto(byKey, {
+				key,
+				capabilities,
+				...(typeof codeIdentity === "string" ? { codeIdentity } : {}),
+			});
+		}
+	}
+	return [...byKey.values()];
 }
 
 /** Byte-order comparison, so persisted state does not vary with the host locale. */
@@ -40,7 +92,7 @@ export function readState(path = statePath()): PluginState {
 		>;
 		return {
 			disabled: stringArray(parsed.disabled),
-			trusted: stringArray(parsed.trusted),
+			trusted: parseTrusted(parsed.trusted),
 		};
 	} catch {
 		return { ...EMPTY };
@@ -52,7 +104,13 @@ function writeState(state: PluginState, path = statePath()): void {
 	const tmp = join(dirname(path), `.${Date.now()}-${process.pid}.tmp`);
 	const normalized: PluginState = {
 		disabled: [...new Set(state.disabled)].sort(byCodeUnit),
-		trusted: [...new Set(state.trusted)].sort(byCodeUnit),
+		trusted: [...state.trusted]
+			.map((r) => ({
+				key: r.key,
+				capabilities: CAPABILITIES.filter((c) => r.capabilities.includes(c)),
+				...(r.codeIdentity ? { codeIdentity: r.codeIdentity } : {}),
+			}))
+			.sort((a, b) => byCodeUnit(a.key, b.key)),
 	};
 	writeFileSync(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
 	renameSync(tmp, path);
@@ -72,16 +130,18 @@ export function setDisabled(
 	return next;
 }
 
-export function setTrustedMany(
-	add: readonly string[],
-	remove: readonly string[] = [],
+export function grantTrust(
+	grants: ReadonlyArray<{
+		key: string;
+		capabilities: TrustCapability[];
+		codeIdentity?: string;
+	}>,
 	path = statePath(),
 ): PluginState {
 	const state = readState(path);
-	const trusted = new Set(state.trusted);
-	for (const name of add) trusted.add(name);
-	for (const name of remove) trusted.delete(name);
-	const next: PluginState = { ...state, trusted: [...trusted] };
+	const byKey = new Map(state.trusted.map((r) => [r.key, r] as const));
+	for (const grant of grants) mergeInto(byKey, grant);
+	const next: PluginState = { ...state, trusted: [...byKey.values()] };
 	writeState(next, path);
 	return next;
 }

@@ -9,13 +9,16 @@
  */
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -23,7 +26,7 @@ import { promisify } from "node:util";
 import { x as extractTar } from "tar";
 
 import { loadManifest } from "./manifest.ts";
-import { userPluginsDir } from "./paths-client.ts";
+import { INSTALL_MARKER, userPluginsDir } from "./paths-client.ts";
 import type { PluginManifest } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
@@ -101,6 +104,29 @@ export interface InstallOptions {
 }
 
 /**
+ * Stamp a fresh client-owned install generation into the installed root.
+ *
+ * Written last, into the final destination (never staging), so a source-shipped
+ * marker cannot pin identity. Any pre-existing marker is removed without
+ * following a symlink. Invalidates `pi-entrypoints` trust on client-managed
+ * replacement; it is NOT a defense against in-place filesystem tampering.
+ */
+function stampInstallGeneration(destination: string): void {
+	const marker = join(destination, INSTALL_MARKER);
+	try {
+		lstatSync(marker);
+		rmSync(marker, { force: true }); // no recursion; does not follow symlink target
+	} catch {
+		// nothing to remove
+	}
+	writeFileSync(
+		marker,
+		`${JSON.stringify({ version: 1, id: randomUUID() })}\n`,
+		{ encoding: "utf-8", mode: 0o600 },
+	);
+}
+
+/**
  * Fetch a plugin into a staging directory, validate it, then move it into place.
  *
  * Staging first means a plugin whose manifest is rejected never appears in the
@@ -153,6 +179,7 @@ export async function install(
 		// Copy rather than rename: staging is in the OS temp dir, which is
 		// frequently a different filesystem from the agent directory.
 		cpSync(staged, destination, { recursive: true, dereference: false });
+		stampInstallGeneration(destination);
 
 		return { manifest, root: destination, source };
 	} finally {

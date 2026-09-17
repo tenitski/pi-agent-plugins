@@ -18,7 +18,7 @@ import {
 	resolveExisting,
 	resolveInRoot,
 } from "./paths.ts";
-import { pluginDataDir } from "./paths-client.ts";
+import { pluginDataDir, readInstallGeneration } from "./paths-client.ts";
 import { validateSkillFile } from "./skill.ts";
 import {
 	PI_NAMESPACE,
@@ -255,10 +255,13 @@ export function loadPlugin(
 		);
 	}
 
+	const codeIdentity = readInstallGeneration(root);
+
 	const plugin: LoadedPlugin = {
 		manifest,
 		root,
 		dataDir,
+		...(codeIdentity ? { codeIdentity } : {}),
 		scope: options.scope,
 		enabled: !options.disabled?.has(manifest.name),
 		skills,

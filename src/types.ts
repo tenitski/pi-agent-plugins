@@ -120,6 +120,18 @@ export interface ValidationResult<T> {
 
 export type PluginScope = "user" | "project";
 
+/** Capability an installed plugin instance may be trusted for. */
+export type TrustCapability = "mcp" | "pi-entrypoints";
+
+/** One installed plugin instance's persisted trust grant. */
+export interface TrustedPluginRecord {
+	/** `pluginTrustKey()` value. */
+	key: string;
+	capabilities: TrustCapability[];
+	/** Code identity at the time `pi-entrypoints` was granted (user plugins). */
+	codeIdentity?: string;
+}
+
 /** Shape of `extensions["dev.pi.agent"]` interpreted by this client (§8.1). */
 export interface PiClientExtension {
 	prompts?: string[];
@@ -148,6 +160,8 @@ export interface LoadedPlugin {
 	root: string;
 	/** Absolute path to this plugin's persistent PLUGIN_DATA directory. */
 	dataDir: string;
+	/** Client-owned install generation from `.pi-install-id`, when present. */
+	codeIdentity?: string;
 	scope: PluginScope;
 	enabled: boolean;
 	skills: LoadedSkill[];

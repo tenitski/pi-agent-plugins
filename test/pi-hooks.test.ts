@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { install } from "../src/install.ts";
+import { readInstallGeneration } from "../src/paths-client.ts";
 import { discoverPiHooks } from "../src/pi-hooks.ts";
 import { PLUGIN_SCHEMA_ID, type LoadedPlugin } from "../src/types.ts";
 
@@ -126,4 +128,30 @@ test("dedupes symlink-aliased hooks by canonical realpath", () => {
 	assert.equal(hooks.length, 1);
 	// A diagnostic mentioning duplicate should be present
 	assert.ok(diagnostics.some((d) => /duplicate/.test(d.message)));
+});
+
+test("install stamps a fresh code identity and overwrites an author-shipped marker", async () => {
+	const src = tempDir();
+	writeFileSync(
+		join(src, "plugin.json"),
+		JSON.stringify({ $schema: PLUGIN_SCHEMA_ID, name: "demo" }),
+	);
+	writeFileSync(
+		join(src, ".pi-install-id"),
+		JSON.stringify({ version: 1, id: "author-controlled" }),
+	);
+	const target = tempDir();
+
+	const first = await install({ kind: "path", path: src }, { targetDir: target });
+	const id1 = readInstallGeneration(first.root);
+	assert.ok(id1?.startsWith("install:v1:"));
+	assert.notEqual(id1, "install:v1:author-controlled");
+
+	const second = await install(
+		{ kind: "path", path: src },
+		{ targetDir: target, force: true },
+	);
+	const id2 = readInstallGeneration(second.root);
+	assert.ok(id2?.startsWith("install:v1:"));
+	assert.notEqual(id2, id1); // reinstall → new generation
 });
